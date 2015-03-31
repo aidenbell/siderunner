@@ -23,6 +23,9 @@ logger = logging.getLogger()
 
 from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 
 __all__ = ['SeleniumTestCase', 'SeleniumTestSuite']
 
@@ -87,11 +90,17 @@ def find_element(driver, target):
 
 class SeleniumTestCase:
 
-    def __init__(self, filename, callback=None):
+    def __init__(self, filename, suite, callback=None):
         self.filename = filename
         self.callback = callback
+        self.suite = suite
+
         document = open(filename).read()
-        dom = xml.dom.minidom.parseString(document)
+
+        try:
+            dom = xml.dom.minidom.parseString(document)
+        except Exception, e:
+            raise Exception("Unable to parse Selenium XML %s: %s"%(filename, e.message))
 
         self.commands = []
 
@@ -117,7 +126,20 @@ class SeleniumTestCase:
             if command[2] != None:
                 args.append(command[2])
             logger.info('   ' + ' '.join([command[0]]+[repr(a) for a in args]).splitlines()[0])
-            method(driver, *args)
+
+            # Replace any arguments that contain stored values
+            for argi, arg in enumerate(args):
+                if not arg.startswith('${'):
+                    continue
+                varname = arg.strip()[2:-1]
+                val = self.suite.get_stored_value(driver, varname)
+                args[argi] = val
+
+            try:
+                method(driver, *args)
+            except Exception ,e:
+                raise Exception("Error running %s: %s"%(self.filename, e.message))
+
             if self.callback:
                 self.callback(driver.page_source)
 
@@ -127,8 +149,33 @@ class SeleniumTestCase:
     def click(self, driver, target):
         find_element(driver, target).click()
 
-    def clickAndWait(self, driver, target):
-        find_element(driver, target).click()
+    def clickAndWait(self, driver, target, value=None):
+        elem = find_element(driver, target)
+
+        if value != None:
+            assert elem.text == value
+
+        elem.click()
+
+    def assertTitle(self, driver, text):
+        assert text in driver.title
+
+    def storeText(self, driver, elem, name):
+        self.suite.set_stored_value(driver,name, find_element(driver, elem).text)
+
+    def waitForTitle(self, driver, value=''):
+        try:
+            # Waiting for the title isn't simple, so we wait for the <body>
+            # tag by which time the driver should have a title value
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        finally:
+            assert driver.title == value
+
+    def waitForVisible(self, driver, selector):
+        try:
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located(find_element(driver, selector)))
+        finally:
+            return
 
     def type(self, driver, target, text=''):
         element = find_element(driver, target)
@@ -238,6 +285,8 @@ class SeleniumTestSuite:
     def __init__(self, filename, callback=None):
         path = os.path.split(filename)[0]
         self.callback = callback
+        # This is to support storeText commands
+        self.stored_text = {}
 
         document = open(filename).read()
         dom = xml.dom.minidom.parseString(document)
@@ -250,7 +299,7 @@ class SeleniumTestSuite:
 
             title = row.getElementsByTagName('a')[0].childNodes[0].data
             test_filename = row.getElementsByTagName('a')[0].attributes.items()[0][1]
-            self.tests.append((title, SeleniumTestCase(os.path.join(path, test_filename), self.callback)))
+            self.tests.append((title, SeleniumTestCase(os.path.join(path, test_filename), self, self.callback)))
 
     def run(self, driver, url):
         for title, test in self.tests:
@@ -259,6 +308,12 @@ class SeleniumTestSuite:
             except:
                 print 'Error in %s (%s)' % (title, test.filename)
                 raise
+
+    def get_stored_value(self, driver, name):
+        return self.stored_text[name]
+
+    def set_stored_value(self, driver, name, value):
+        self.stored_text[name] = value
 
     def __repr__(self):
         tests = '\n'.join(['%s - %s' % (title,test.filename) for title,test in self.tests])
