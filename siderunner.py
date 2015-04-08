@@ -112,6 +112,9 @@ class SeleniumTestCase:
             if not hasattr(self, str(command[0])):
                 raise Exception('Unknown Selenium IDE command %s' % command)
 
+    def _wait_for_body(self, driver, timeout=10):
+        WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
     def run(self, driver, url):
 
         self.base_url = url
@@ -137,8 +140,10 @@ class SeleniumTestCase:
 
             try:
                 method(driver, *args)
-            except Exception ,e:
-                raise Exception("Error running %s: %s"%(self.filename, e.message))
+            except Exception, e:
+                print "Error in %s: %s"%(self.filename, command), e.message
+                raise e
+
 
             if self.callback:
                 self.callback(driver.page_source)
@@ -156,9 +161,12 @@ class SeleniumTestCase:
             assert elem.text == value
 
         elem.click()
+        self._wait_for_body(driver)
 
     def assertTitle(self, driver, text):
-        assert text in driver.title
+        sa,sb = (driver.title.strip(), text.strip())
+        if sa != sb:
+            raise Exception("Assert page title \"%s\"!=\"%s\""%(sa, sb))
 
     def storeText(self, driver, elem, name):
         self.suite.set_stored_value(driver,name, find_element(driver, elem).text)
